@@ -9,16 +9,24 @@ export 'tesla.dart';
 const List<String> _emailEnvVars = const <String>[
   "TESLA_EMAIL",
   "TESLA_USERNAME",
-  "TESLA_USER"
+  "TESLA_USER",
+  "teslaEmail"
 ];
 
 const List<String> _passwordEnvVars = const <String>[
   "TESLA_PASSWORD",
   "TESLA_PASS",
-  "TESLA_PWD"
+  "TESLA_PWD",
+  "teslaPassword"
 ];
 
-String _getEnvKey(List<String> possible) {
+const List<String> _credentialsEnvVars = const <String>[
+  "TESLA_CREDENTIALS_PATH",
+  "TESLA_CREDENTIALS_FILE",
+  "TESLA_CREDENTIALS_JSON"
+];
+
+String _getEnvValue(List<String> possible, [bool error = true]) {
   for (var key in possible) {
     var dartEnvValue = new String.fromEnvironment(key);
     if (dartEnvValue != null) {
@@ -31,14 +39,35 @@ String _getEnvKey(List<String> possible) {
     }
   }
 
-  throw new Exception(
-      "Expected environment variable '${possible.first}' to be present.");
+  if (error) {
+    throw new Exception(
+        "Expected environment variable '${possible.first}' to be present.");
+  }
+  return null;
+}
+
+String _getCredentialValue(List<String> possible) {
+  var path = _getEnvValue(_credentialsEnvVars, false);
+
+  if (path != null) {
+    var file = new File(path);
+    if (file.existsSync()) {
+      var content = file.readAsStringSync();
+      var map = json.decode(content);
+      var value = map[possible.last];
+      if (value != null) {
+        return value;
+      }
+    }
+  }
+
+  return _getEnvValue(possible);
 }
 
 TeslaClient getTeslaClient(
     {String teslaUsername, String teslaPassword, TeslaApiEndpoints endpoints}) {
-  var email = teslaUsername ?? _getEnvKey(_emailEnvVars).trim();
-  var password = teslaPassword ?? _getEnvKey(_passwordEnvVars);
+  var email = teslaUsername ?? _getCredentialValue(_emailEnvVars).trim();
+  var password = teslaPassword ?? _getCredentialValue(_passwordEnvVars);
 
   if (password.startsWith("base64:")) {
     password =
