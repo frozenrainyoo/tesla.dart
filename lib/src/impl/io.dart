@@ -37,6 +37,7 @@ class TeslaClientImpl extends TeslaHttpClient {
     Uri uri;
     if (tesla) {
       uri = endpoints.teslaApiUl.resolve(url);
+      needsToken = false;
     } else {
       uri = endpoints.ownersApiUrl.resolve(url);
     }
