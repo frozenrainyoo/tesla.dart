@@ -8,8 +8,14 @@ import '../../tesla.dart';
 import 'common/summon.dart';
 import 'common/http.dart';
 
+import 'package:html/parser.dart';
+
 final ContentType _jsonContentType =
     new ContentType("application", "json", charset: "utf-8");
+
+final ContentType _urlencodedContentType =
+new ContentType("application", "x-www-form-urlencoded", charset: "utf-8");
+
 
 HttpClient _createHttpClient() {
   var client = new HttpClient();
@@ -32,23 +38,66 @@ class TeslaClientImpl extends TeslaHttpClient {
     bool needsToken: true,
     String extract,
     Map<String, dynamic> body,
-    bool tesla = false,
+    TeslaApiType type = TeslaApiType.OwnersApi,
+    Map<String, dynamic /*String|Iterable<String>*/ > queryParameters,
+    Map<String, String> headers,
   }) async {
     Uri uri;
-    if (tesla) {
+    if (type == TeslaApiType.TeslaApi) {
       uri = endpoints.teslaApiUl.resolve(url);
       needsToken = false;
-    } else {
+    } else if (type == TeslaApiType.OwnersApi) {
       uri = endpoints.ownersApiUrl.resolve(url);
+    } else {
+      uri = endpoints.authApiUrl.resolve(url);
     }
 
     if (endpoints.enableProxyMode) {
       uri = uri.replace(queryParameters: {"__tesla": "api"});
     }
 
-    var request =
-        body == null ? await client.getUrl(uri) : await client.postUrl(uri);
+    if (queryParameters != null) {
+      uri = uri.replace(queryParameters: queryParameters);
+    }
+
+    var request;
+    if (type == TeslaApiType.OauthApiStep1) {
+      request = await client.getUrl(uri);
+    } else if (type == TeslaApiType.OauthApiStep2) {
+      request = await client.postUrl(uri);
+      body.forEach((key, value) {
+        if (key == 'cookie') {
+          request.headers.add("Cookie", value);
+        }
+      });
+      request.followRedirects = false;
+    } else {
+      if (body == null) {
+        request = await client.getUrl(uri);
+      } else {
+        request = await client.postUrl(uri);
+      }
+    }
+
     request.headers.set("User-Agent", "Tesla.dart");
+    request.headers.add("x-tesla-user-agent", "Tesla.dart");
+    request.headers.add("X-Requested-With", "com.teslamotors.tesla");
+
+    if (type == TeslaApiType.OauthApiStep2) {
+      body.forEach((key, value) {
+        if (key == 'cookie') {
+          request.headers.set("Cookie", value);
+        }
+      });
+      body.remove('cookie');
+    }
+
+    if (headers != null) {
+      headers.forEach((key, value) {
+        request.headers.add(key, value);
+      });
+    }
+
     if (needsToken) {
       if (!isCurrentTokenValid(true)) {
         await login();
@@ -56,17 +105,82 @@ class TeslaClientImpl extends TeslaHttpClient {
       request.headers.add("Authorization", "Bearer ${token.accessToken}");
     }
     if (body != null) {
-      request.headers.contentType = _jsonContentType;
-      request.write(const JsonEncoder().convert(body));
+      if (type == TeslaApiType.OauthApiStep2) {
+        request.headers.contentType = _urlencodedContentType;
+        var parts = [];
+        body.forEach((key, value) {
+          parts.add('${Uri.encodeQueryComponent(key)}='
+              '${Uri.encodeQueryComponent(value)}');
+        });
+        var formData = parts.join('&');
+        List<int> bodyBytes = utf8.encode(formData);
+        request.headers.set('Content-Length', bodyBytes.length.toString());
+        request.add(bodyBytes);
+      } else {
+        request.headers.contentType = _jsonContentType;
+        request.write(const JsonEncoder().convert(body));
+      }
     }
-    var response = await request.close();
+    HttpClientResponse response = await request.close();
     var content =
         await response.cast<List<int>>().transform(const Utf8Decoder()).join();
-    if (response.statusCode != 200) {
-      throw new Exception(
-          "Failed to perform action. (Status Code: ${response.statusCode})\n${content}");
+    if (type == TeslaApiType.OauthApiStep2) {
+      if (response.statusCode == 302) {
+        if (content.contains("Your account has been locked")) {
+          throw new Exception(
+              "Failed to perform action. (Status Code: ${response.statusCode})\n${content}");
+        }
+      }
+    } else {
+      if (response.statusCode != 200) {
+        throw new Exception(
+            "Failed to perform action. (Status Code: ${response.statusCode})\n${content}");
+      }
     }
-    var result = const JsonDecoder().convert(content);
+
+    var result;
+    if (type == TeslaApiType.OauthApiStep1) {
+      var document = parse(content);
+      var inputs = document.querySelectorAll("input[type=hidden]");
+      var i = 1;
+      Map<String, String> temp = new Map();
+      inputs.forEach((element) {
+        var name = element.attributes['name'];
+        var value = element.attributes['value'];
+        temp[name] = value;
+      });
+      response.headers.forEach((name, values) {
+        if (name == "set-cookie") {
+          if (values.length == 0) {
+            throw new Exception("Failed Cookie");
+          }
+          values.forEach((element) {
+            if (element.contains("tesla-auth.sid")) {
+              temp['cookie'] = element.split(";")[0];
+              temp['cookie'] = element;
+            }
+          });
+        }
+      });
+      result = temp;
+    } else if (type == TeslaApiType.OauthApiStep2) {
+      Map<String, String> temp = new Map();
+      response.headers.forEach((name, values) {
+        if (name == "location") {
+          if (values.length == 0) {
+            throw new Exception("Failed Cookie");
+          }
+          values.forEach((element) {
+            if (element.contains("code=")) {
+              temp['code'] = element.split("code=")[1].split("&")[0];
+            }
+          });
+        }
+      });
+      result = temp;
+    } else {
+      result = const JsonDecoder().convert(content);
+    }
 
     if (result is Map) {
       if (extract != null) {

@@ -1,11 +1,21 @@
 part of tesla;
 
+enum TeslaApiType {
+  TeslaApi,
+  OwnersApi,
+  OauthApiStep1,
+  OauthApiStep2,
+  OauthApiStep3,
+  OauthApiStep4,
+}
+
 abstract class TeslaApiEndpoints {
   factory TeslaApiEndpoints.standard() {
     return new TeslaStandardApiEndpoints();
   }
 
   Uri get ownersApiUrl;
+  Uri get authApiUrl;
   Uri get teslaApiUl;
   Uri get summonConnectUrl;
   String get clientId;
@@ -16,6 +26,9 @@ abstract class TeslaApiEndpoints {
 class TeslaStandardApiEndpoints implements TeslaApiEndpoints {
   @override
   Uri get ownersApiUrl => Uri.parse("https://owner-api.teslamotors.com/");
+
+  @override
+  Uri get authApiUrl => Uri.parse("https://auth.tesla.com/");
 
   @override
   Uri get teslaApiUl => Uri.parse("https://www.tesla.com/");

@@ -1,6 +1,9 @@
 library tesla.impl.common.http;
 
 import 'dart:async';
+import 'dart:math';
+import 'dart:convert';
+import 'package:crypto/crypto.dart';
 
 import '../../../tesla.dart';
 
@@ -37,30 +40,114 @@ abstract class TeslaHttpClient implements TeslaClient {
   @override
   Future login() async {
     if (!isCurrentTokenValid(false)) {
-      var result = await sendHttpRequest("/oauth/token",
-          body: {
-            "grant_type": "password",
+      const _chars = 'AaBbCcDdEeFfGgHhIiJjKkLlMmNnOoPpQqRrSsTtUuVvWwXxYyZz1234567890';
+      Random _rnd = Random();
+
+      var codeVerifier = String.fromCharCodes(Iterable.generate(
+          86, (_) => _chars.codeUnitAt(_rnd.nextInt(_chars.length))));
+      var base64CodeVerifier = Base64Encoder.urlSafe().convert(
+          const Utf8Encoder().convert(codeVerifier));
+
+      List<int> bytes = const Utf8Encoder().convert(codeVerifier);
+      var hash = sha256.convert(bytes);
+      var codeChallenge = Base64Encoder.urlSafe().convert(hash.bytes);
+
+      var state = Base64Encoder.urlSafe().convert(
+          const Utf8Encoder().convert(
+              String.fromCharCodes(Iterable.generate(
+              8, (_) => _chars.codeUnitAt(_rnd.nextInt(_chars.length))))
+          )
+      );
+
+      var step1 = await sendHttpRequest("oauth2/v3/authorize",
+          queryParameters: {
+            "client_id": "ownerapi",
+            "code_challenge": codeChallenge,
+            "code_challenge_method": "S256",
+            "redirect_uri": "https://auth.tesla.com/void/callback",
+            "response_type": "code",
+            "scope": "openid email offline_access",
+            "state": state,
+          },
+          needsToken: false,
+          type: TeslaApiType.OauthApiStep1,
+      );
+
+      step1['identity'] = email;
+      step1['credential'] = password;
+
+      var step2 = await sendHttpRequest("oauth2/v3/authorize",
+        queryParameters: {
+          "client_id": "ownerapi",
+          "code_challenge": codeChallenge,
+          "code_challenge_method": "S256",
+          "redirect_uri": "https://auth.tesla.com/void/callback",
+          "response_type": "code",
+          "scope": "openid email offline_access",
+          "state": state,
+        },
+        body: step1,
+        needsToken: false,
+        type: TeslaApiType.OauthApiStep2,
+      );
+
+      var step3 = await sendHttpRequest("oauth2/v3/token",
+        body: {
+          "grant_type": "authorization_code",
+          "client_id": "ownerapi",
+          "code": step2["code"],
+          "code_verifier": codeVerifier,
+          "redirect_uri": "https://auth.tesla.com/void/callback",
+        },
+        needsToken: false,
+        type: TeslaApiType.OauthApiStep3,
+      );
+
+      var accessToken = step3['access_token'];
+      var step4 = await sendHttpRequest("oauth/token",
+        body: {
+            "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
             "client_id": endpoints.clientId,
             "client_secret": endpoints.clientSecret,
-            "email": email,
-            "password": password
           },
-          needsToken: false);
+        type: TeslaApiType.OwnersApi,
+        headers: {
+          "Authorization": "Bearer ${accessToken}",
+        },
+        needsToken: false,
+      );
 
-      token = new TeslaJsonAccessToken(result);
+      step4["refresh_token"] = step3["refresh_token"];
+      token = new TeslaJsonAccessToken(step4);
       return;
     }
 
-    var result = await sendHttpRequest("/oauth/token",
+    var refresh = await sendHttpRequest("oauth2/v3/token",
         body: {
           "grant_type": "refresh_token",
-          "client_id": endpoints.clientId,
-          "client_secret": endpoints.clientSecret,
-          "refresh_token": token.refreshToken
+          "client_id": "ownerapi",
+          "refresh_token": token.refreshToken,
+          "scope": "openid email offline_access",
         },
-        needsToken: false);
+        needsToken: false,
+        type: TeslaApiType.OauthApiStep3);
 
-    token = new TeslaJsonAccessToken(result);
+    var accessToken = refresh['access_token'];
+    var step4 = await sendHttpRequest("oauth/token",
+      body: {
+        "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+        "client_id": endpoints.clientId,
+        "client_secret": endpoints.clientSecret,
+      },
+      type: TeslaApiType.OwnersApi,
+      headers: {
+        "Authorization": "Bearer ${accessToken}",
+      },
+      needsToken: false,
+    );
+
+    step4["refresh_token"] = refresh["refresh_token"];
+    token = new TeslaJsonAccessToken(step4);
   }
 
   @override
@@ -136,7 +223,7 @@ abstract class TeslaHttpClient implements TeslaClient {
   Future<List<Supercharger>> listSuperchargers() async {
     var chargers = <Supercharger>[];
 
-    var result = await getJsonList("all-locations", tesla: true, standard: false);
+    var result = await getJsonList("all-locations", type: TeslaApiType.TeslaApi, standard: false);
 
     for (var item in result) {
       chargers.add(new Supercharger(this, item));
@@ -156,10 +243,10 @@ abstract class TeslaHttpClient implements TeslaClient {
     Map<String, dynamic> body,
     String extract: "response",
     bool standard: true,
-    bool tesla = false,
+    TeslaApiType type = TeslaApiType.OwnersApi,
   }) async {
     return (await sendHttpRequest(_apiUrl(url, standard),
-        body: body, extract: extract, tesla: tesla)) as Map<String, dynamic>;
+        body: body, extract: extract, type: type)) as Map<String, dynamic>;
   }
 
   Future<List<dynamic>> getJsonList(
@@ -167,10 +254,10 @@ abstract class TeslaHttpClient implements TeslaClient {
     Map<String, dynamic> body,
     String extract: "response",
     bool standard: true,
-    bool tesla = false,
+    TeslaApiType type = TeslaApiType.OwnersApi,
   }) async {
     return (await sendHttpRequest(_apiUrl(url, standard),
-        body: body, extract: extract, tesla: tesla)) as List<dynamic>;
+        body: body, extract: extract, type: type)) as List<dynamic>;
   }
 
   Future<dynamic> sendHttpRequest(
@@ -178,7 +265,9 @@ abstract class TeslaHttpClient implements TeslaClient {
     bool needsToken: true,
     String extract,
     Map<String, dynamic> body,
-    bool tesla = false,
+    TeslaApiType type = TeslaApiType.OwnersApi,
+    Map<String, dynamic /*String|Iterable<String>*/ > queryParameters,
+    Map<String, String> headers,
   });
 
   String _apiUrl(String path, bool standard) =>

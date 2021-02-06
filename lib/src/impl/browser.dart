@@ -18,11 +18,14 @@ class TeslaClientImpl extends TeslaHttpClient {
     bool needsToken: true,
     String extract,
     Map<String, dynamic> body,
-    bool tesla = false,
+    TeslaApiType type = TeslaApiType.OwnersApi,
   }) async {
     Uri uri;
-    if (tesla) {
+
+    if (type == TeslaApiType.TeslaApi) {
       uri = endpoints.teslaApiUl.resolve(url);
+    } else if (type == TeslaApiType.OauthApi) {
+      uri = endpoints.authApiUrl.resolve(url);
     } else {
       uri = endpoints.ownersApiUrl.resolve(url);
     }
