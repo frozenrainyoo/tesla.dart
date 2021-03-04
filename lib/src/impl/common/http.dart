@@ -40,20 +40,16 @@ abstract class TeslaHttpClient implements TeslaClient {
   @override
   Future login() async {
     if (!isCurrentTokenValid(false)) {
-      const _chars = 'AaBbCcDdEeFfGgHhIiJjKkLlMmNnOoPpQqRrSsTtUuVvWwXxYyZz1234567890';
+      var _chars = 'AaBbCcDdEeFfGgHhIiJjKkLlMmNnOoPpQqRrSsTtUuVvWwXxYyZz1234567890';
       Random _rnd = Random();
-
       var codeVerifier = String.fromCharCodes(Iterable.generate(
           86, (_) => _chars.codeUnitAt(_rnd.nextInt(_chars.length))));
-      var base64CodeVerifier = Base64Encoder.urlSafe().convert(
-          const Utf8Encoder().convert(codeVerifier));
 
-      List<int> bytes = const Utf8Encoder().convert(codeVerifier);
+      List<int> bytes = Utf8Encoder().convert(codeVerifier);
       var hash = sha256.convert(bytes);
       var codeChallenge = Base64Encoder.urlSafe().convert(hash.bytes);
-
       var state = Base64Encoder.urlSafe().convert(
-          const Utf8Encoder().convert(
+          Utf8Encoder().convert(
               String.fromCharCodes(Iterable.generate(
               8, (_) => _chars.codeUnitAt(_rnd.nextInt(_chars.length))))
           )
@@ -75,33 +71,57 @@ abstract class TeslaHttpClient implements TeslaClient {
 
       step1['identity'] = email;
       step1['credential'] = password;
+      var cookie = step1['cookie'];
+      step1.remove('cookie');
 
-      var step2 = await sendHttpRequest("oauth2/v3/authorize",
-        queryParameters: {
-          "client_id": "ownerapi",
-          "code_challenge": codeChallenge,
-          "code_challenge_method": "S256",
-          "redirect_uri": "https://auth.tesla.com/void/callback",
-          "response_type": "code",
-          "scope": "openid email offline_access",
-          "state": state,
-        },
-        body: step1,
-        needsToken: false,
-        type: TeslaApiType.OauthApiStep2,
-      );
+      // await Future.delayed(Duration(seconds: 1));
+      var step2;
+      var retryCount = 0;
+      while(retryCount < 10) {
+        try {
+          step2 = await sendHttpRequest("oauth2/v3/authorize",
+            queryParameters: {
+              "client_id": "ownerapi",
+              "code_challenge": codeChallenge,
+              "code_challenge_method": "S256",
+              "redirect_uri": "https://auth.tesla.com/void/callback",
+              "response_type": "code",
+              "scope": "openid email offline_access",
+              "state": state,
+            },
+            body: step1,
+            needsToken: false,
+            type: TeslaApiType.OauthApiStep2,
+            headers: {
+              "Cookie": "${cookie}",
+            },
+          );
+          break;
+        } catch (e) {
+          retryCount++;
+        }
+      }
 
-      var step3 = await sendHttpRequest("oauth2/v3/token",
-        body: {
-          "grant_type": "authorization_code",
-          "client_id": "ownerapi",
-          "code": step2["code"],
-          "code_verifier": codeVerifier,
-          "redirect_uri": "https://auth.tesla.com/void/callback",
-        },
-        needsToken: false,
-        type: TeslaApiType.OauthApiStep3,
-      );
+      retryCount = 0;
+      var step3;
+      while(retryCount < 10) {
+        try {
+          step3 = await sendHttpRequest("oauth2/v3/token",
+            body: {
+              "grant_type": "authorization_code",
+              "client_id": "ownerapi",
+              "code": step2["code"],
+              "code_verifier": codeVerifier,
+              "redirect_uri": "https://auth.tesla.com/void/callback",
+            },
+            needsToken: false,
+            type: TeslaApiType.OauthApiStep3,
+          );
+          break;
+        } catch (e) {
+          retryCount++;
+        }
+      }
 
       var accessToken = step3['access_token'];
       var step4 = await sendHttpRequest("oauth/token",

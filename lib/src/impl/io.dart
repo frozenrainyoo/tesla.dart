@@ -65,11 +65,6 @@ class TeslaClientImpl extends TeslaHttpClient {
       request = await client.getUrl(uri);
     } else if (type == TeslaApiType.OauthApiStep2) {
       request = await client.postUrl(uri);
-      body.forEach((key, value) {
-        if (key == 'cookie') {
-          request.headers.add("Cookie", value);
-        }
-      });
       request.followRedirects = false;
     } else {
       if (body == null) {
@@ -82,15 +77,6 @@ class TeslaClientImpl extends TeslaHttpClient {
     request.headers.set("User-Agent", "Tesla.dart");
     request.headers.add("x-tesla-user-agent", "Tesla.dart");
     request.headers.add("X-Requested-With", "com.teslamotors.tesla");
-
-    if (type == TeslaApiType.OauthApiStep2) {
-      body.forEach((key, value) {
-        if (key == 'cookie') {
-          request.headers.set("Cookie", value);
-        }
-      });
-      body.remove('cookie');
-    }
 
     if (headers != null) {
       headers.forEach((key, value) {
@@ -121,7 +107,8 @@ class TeslaClientImpl extends TeslaHttpClient {
         request.write(const JsonEncoder().convert(body));
       }
     }
-    HttpClientResponse response = await request.close();
+    HttpClientResponse response = await request.close()
+      .timeout(const Duration(seconds: 4));
     var content =
         await response.cast<List<int>>().transform(const Utf8Decoder()).join();
     if (type == TeslaApiType.OauthApiStep2) {
@@ -157,7 +144,6 @@ class TeslaClientImpl extends TeslaHttpClient {
           values.forEach((element) {
             if (element.contains("tesla-auth.sid")) {
               temp['cookie'] = element.split(";")[0];
-              temp['cookie'] = element;
             }
           });
         }
